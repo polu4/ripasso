@@ -23,6 +23,16 @@ PR's are very welcome!
 This is a reimplementation of https://github.com/cortex/gopass in Rust. I started it mainly because https://github.com/go-qml/qml
 is unmaintained. Also, using a safe language for your passwords seems like a good idea.
 
+### Changes
+
+
+#### Multiple Accounts
+
+Ripasso supports multiple password stores. You can configure them in the config file.
+The TUI provides a unified view of all your password stores, allowing you to search and access passwords from all accounts simultaneously.
+When creating a new password, the active store (selected in the menu) is used.
+
+
 ## UI's
 
 ### Cursive - Terminal interface

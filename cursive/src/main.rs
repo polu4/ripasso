@@ -133,7 +133,23 @@ fn page_up(ui: &mut Cursive) {
     );
 }
 
-fn copy(ui: &mut Cursive, store: PasswordStoreType) {
+fn find_store_for_entry(
+    stores: StoreListType,
+    entry: &pass::PasswordEntry,
+) -> Result<PasswordStoreType> {
+    for store in stores.lock()?.iter() {
+        let store_guard = store.lock()?;
+        if entry.path.starts_with(store_guard.get_store_path()) {
+            drop(store_guard);
+            return Ok(Arc::new(Mutex::new(store.clone())));
+        }
+    }
+    Err(pass::Error::Generic(CATALOG.gettext(
+        "Could not find store for entry",
+    )))
+}
+
+fn copy(ui: &mut Cursive, stores: StoreListType) {
     let sel = ui
         .find_name::<SelectView<pass::PasswordEntry>>("results")
         .unwrap()
@@ -142,8 +158,11 @@ fn copy(ui: &mut Cursive, store: PasswordStoreType) {
     if sel.is_none() {
         return;
     }
+    let entry = sel.unwrap();
+
     if let Err(err) = || -> Result<()> {
-        let mut secret: String = sel.unwrap().secret(&*store.lock()?.lock()?)?;
+        let store = find_store_for_entry(stores.clone(), &entry)?;
+        let mut secret: String = entry.secret(&*store.lock()?.lock()?)?;
         helpers::set_clipboard(&secret)?;
         secret.zeroize();
         Ok(())
@@ -161,7 +180,7 @@ fn copy(ui: &mut Cursive, store: PasswordStoreType) {
     });
 }
 
-fn copy_first_line(ui: &mut Cursive, store: PasswordStoreType) {
+fn copy_first_line(ui: &mut Cursive, stores: StoreListType) {
     let sel = ui
         .find_name::<SelectView<pass::PasswordEntry>>("results")
         .unwrap()
@@ -170,8 +189,11 @@ fn copy_first_line(ui: &mut Cursive, store: PasswordStoreType) {
     if sel.is_none() {
         return;
     }
+    let entry = sel.unwrap();
+
     if let Err(err) = || -> Result<()> {
-        let mut secret = sel.unwrap().password(&*store.lock()?.lock()?)?;
+        let store = find_store_for_entry(stores.clone(), &entry)?;
+        let mut secret = entry.password(&*store.lock()?.lock()?)?;
         helpers::set_clipboard(&secret)?;
         secret.zeroize();
         Ok(())
@@ -191,7 +213,7 @@ fn copy_first_line(ui: &mut Cursive, store: PasswordStoreType) {
     });
 }
 
-fn copy_mfa(ui: &mut Cursive, store: PasswordStoreType) {
+fn copy_mfa(ui: &mut Cursive, stores: StoreListType) {
     let sel = ui
         .find_name::<SelectView<pass::PasswordEntry>>("results")
         .unwrap()
@@ -200,8 +222,11 @@ fn copy_mfa(ui: &mut Cursive, store: PasswordStoreType) {
     if sel.is_none() {
         return;
     }
+    let entry = sel.unwrap();
+
     if let Err(err) = || -> Result<()> {
-        let mut secret = sel.unwrap().mfa(&*store.lock()?.lock()?)?;
+        let store = find_store_for_entry(stores.clone(), &entry)?;
+        let mut secret = entry.mfa(&*store.lock()?.lock()?)?;
         helpers::set_clipboard(&secret)?;
         secret.zeroize();
         Ok(())
@@ -240,10 +265,11 @@ fn copy_name(ui: &mut Cursive) {
     });
 }
 
-fn do_delete(ui: &mut Cursive, store: PasswordStoreType) {
+fn do_delete(ui: &mut Cursive, stores: StoreListType) {
+    let stores_clone = stores.clone();
     ui.call_on_name(
         "results",
-        |l: &mut SelectView<pass::PasswordEntry>| -> Result<()> {
+        move |l: &mut SelectView<pass::PasswordEntry>| -> Result<()> {
             let sel = l.selection();
 
             if sel.is_none() {
@@ -251,6 +277,7 @@ fn do_delete(ui: &mut Cursive, store: PasswordStoreType) {
             }
 
             let sel = sel.unwrap();
+            let store = find_store_for_entry(stores_clone, &sel)?;
             let r = sel.delete_file(&*store.lock()?.lock()?);
 
             if r.is_err() {
@@ -268,13 +295,13 @@ fn do_delete(ui: &mut Cursive, store: PasswordStoreType) {
     ui.pop_layer();
 }
 
-fn delete(ui: &mut Cursive, store: PasswordStoreType) {
+fn delete(ui: &mut Cursive, stores: StoreListType) {
     ui.add_layer(CircularFocus::new(
         Dialog::around(TextView::new(
             CATALOG.gettext("Are you sure you want to delete the password?"),
         ))
         .button(CATALOG.gettext("Yes"), move |ui: &mut Cursive| {
-            do_delete(ui, store.clone());
+            do_delete(ui, stores.clone());
             ui.call_on_name("status_bar", |l: &mut TextView| {
                 l.set_content(CATALOG.gettext("Password deleted"));
             });
@@ -298,7 +325,7 @@ fn get_selected_password_entry(ui: &mut Cursive) -> Option<pass::PasswordEntry> 
     Some(password_entry)
 }
 
-fn show_file_history(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
+fn show_file_history(ui: &mut Cursive, stores: StoreListType) -> Result<()> {
     let password_entry_opt = get_selected_password_entry(ui);
     if password_entry_opt.is_none() {
         return Ok(());
@@ -309,6 +336,7 @@ fn show_file_history(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
         .h_align(cursive::align::HAlign::Left)
         .with_name("file_history");
 
+    let store = find_store_for_entry(stores, &password_entry)?;
     let history = password_entry.get_history(&*store.lock()?.lock()?)?;
 
     for history_line in history {
@@ -344,16 +372,16 @@ fn show_file_history(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
     Ok(())
 }
 
-fn do_show_file_history(ui: &mut Cursive, store: PasswordStoreType) {
-    let res = show_file_history(ui, store);
+fn do_show_file_history(ui: &mut Cursive, stores: StoreListType) {
+    let res = show_file_history(ui, stores);
 
     if let Err(err) = res {
         helpers::errorbox(ui, &err);
     }
 }
 
-fn do_password_save(ui: &mut Cursive, password: &str, store: PasswordStoreType, do_pop: bool) {
-    let res = password_save(ui, password, store, do_pop);
+fn do_password_save(ui: &mut Cursive, password: &str, stores: StoreListType, do_pop: bool) {
+    let res = password_save(ui, password, stores, do_pop);
     if let Err(err) = res {
         helpers::errorbox(ui, &err);
     }
@@ -362,7 +390,7 @@ fn do_password_save(ui: &mut Cursive, password: &str, store: PasswordStoreType, 
 fn password_save(
     ui: &mut Cursive,
     password: &str,
-    store: PasswordStoreType,
+    stores: StoreListType,
     do_pop: bool,
 ) -> Result<()> {
     let password_entry_opt = get_selected_password_entry(ui);
@@ -372,6 +400,7 @@ fn password_save(
 
     let password_entry = password_entry_opt.unwrap();
 
+    let store = find_store_for_entry(stores, &password_entry)?;
     let r = password_entry.update(password.to_string(), &*store.lock()?.lock()?);
 
     if let Err(err) = r {
@@ -390,14 +419,14 @@ fn password_save(
     Ok(())
 }
 
-fn do_open(ui: &mut Cursive, store: PasswordStoreType) {
-    let res = open(ui, store);
+fn do_open(ui: &mut Cursive, stores: StoreListType) {
+    let res = open(ui, stores);
     if let Err(err) = res {
         helpers::errorbox(ui, &err);
     }
 }
 
-fn open(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
+fn open(ui: &mut Cursive, stores: StoreListType) -> Result<()> {
     let password_entry_opt = get_selected_password_entry(ui);
     if password_entry_opt.is_none() {
         return Ok(());
@@ -405,6 +434,7 @@ fn open(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
 
     let password_entry = password_entry_opt.unwrap();
 
+    let store = find_store_for_entry(stores.clone(), &password_entry)?;
     let mut password = {
         match password_entry.secret(&*store.lock()?.lock()?) {
             Ok(p) => p,
@@ -421,13 +451,13 @@ fn open(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
                 .unwrap();
 
             if new_secret.contains("otpauth://") {
-                let store = store.clone();
+                let stores = stores.clone();
                 let d = Dialog::around(TextView::new(CATALOG.gettext("It seems like you are trying to save a TOTP code to the password store. This will reduce your 2FA solution to just 1FA, do you want to proceed?")))
                     .button(CATALOG.gettext("Save"), move |s| {
                         let mut confirmed_new_secret = s
                             .call_on_name("editbox", |e: &mut TextArea| e.get_content().to_string())
                             .unwrap();
-                        do_password_save(s, &confirmed_new_secret, store.clone(), true);
+                        do_password_save(s, &confirmed_new_secret, stores.clone(), true);
                         confirmed_new_secret.zeroize();
                     })
                     .dismiss_button(CATALOG.gettext("Close"));
@@ -437,7 +467,7 @@ fn open(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
                 });
                 s.add_layer(ev);
             } else {
-                do_password_save(s, &new_secret, store.clone(), false);
+                do_password_save(s, &new_secret, stores.clone(), false);
             };
             new_secret.zeroize();
 
@@ -460,7 +490,7 @@ fn open(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
     Ok(())
 }
 
-fn do_rename_file(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
+fn do_rename_file(ui: &mut Cursive, stores: StoreListType) -> Result<()> {
     let old_name = ui
         .find_name::<TextView>("old_name_input")
         .unwrap()
@@ -470,6 +500,17 @@ fn do_rename_file(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
         .find_name::<EditView>("new_name_input")
         .unwrap()
         .get_content();
+
+    let sel = ui
+        .find_name::<SelectView<pass::PasswordEntry>>("results")
+        .unwrap()
+        .selection();
+
+    if sel.is_none() {
+        return Ok(());
+    }
+    let entry = sel.unwrap();
+    let store = find_store_for_entry(stores, &entry)?;
 
     let res = store
         .lock()?
@@ -491,7 +532,7 @@ fn do_rename_file(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
             let col = screen_width(ui);
             let store = store.lock()?;
             let entry = &store.lock()?.passwords[index];
-            l.add_item(create_label(entry, col), entry.clone());
+            l.add_item(create_label(entry, col, store.lock()?.get_name()), entry.clone());
             l.sort_by_label();
 
             ui.pop_layer();
@@ -501,7 +542,7 @@ fn do_rename_file(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
     Ok(())
 }
 
-fn rename_file_dialog(ui: &mut Cursive, store: PasswordStoreType) {
+fn rename_file_dialog(ui: &mut Cursive, stores: StoreListType) {
     let sel = ui
         .find_name::<SelectView<pass::PasswordEntry>>("results")
         .unwrap()
@@ -540,12 +581,12 @@ fn rename_file_dialog(ui: &mut Cursive, store: PasswordStoreType) {
 
     fields.add_child(old_name_fields);
     fields.add_child(new_name_fields);
-    let store2 = store.clone();
+    let stores2 = stores.clone();
 
     let d = Dialog::around(fields)
         .title(CATALOG.gettext("Rename File"))
         .button(CATALOG.gettext("Rename"), move |ui: &mut Cursive| {
-            if let Err(e) = do_rename_file(ui, store.clone()) {
+            if let Err(e) = do_rename_file(ui, stores.clone()) {
                 helpers::errorbox(ui, &e);
             }
         })
@@ -556,7 +597,7 @@ fn rename_file_dialog(ui: &mut Cursive, store: PasswordStoreType) {
             s.pop_layer();
         })
         .on_event(Key::Enter, move |ui: &mut Cursive| {
-            if let Err(e) = do_rename_file(ui, store2.clone()) {
+            if let Err(e) = do_rename_file(ui, stores2.clone()) {
                 helpers::errorbox(ui, &e);
             }
         });
@@ -598,7 +639,14 @@ fn new_password_save(
         Ok(entry) => {
             let col = screen_width(s);
             s.call_on_name("results", |l: &mut SelectView<pass::PasswordEntry>| {
-                l.add_item(create_label(&entry, col), entry);
+                l.add_item(
+                    create_label(
+                        &entry,
+                        col,
+                        store.lock().unwrap().lock().unwrap().get_name(),
+                    ),
+                    entry,
+                );
                 l.sort_by_label();
             });
 
@@ -1077,7 +1125,7 @@ fn substr(str: &str, start: usize, len: usize) -> String {
     str.chars().skip(start).take(len).collect()
 }
 
-fn create_label(p: &pass::PasswordEntry, col: usize) -> String {
+fn create_label(p: &pass::PasswordEntry, col: usize, store_name: &str) -> String {
     let committed_by = p.committed_by.clone();
     let updated = p.updated;
     let name = substr(
@@ -1096,7 +1144,7 @@ fn create_label(p: &pass::PasswordEntry, col: usize) -> String {
     }
 
     format!(
-        "{:4$} {} {} {}",
+        "{:5$} {} {} {} {}",
         p.name,
         verification_status,
         name,
@@ -1104,29 +1152,32 @@ fn create_label(p: &pass::PasswordEntry, col: usize) -> String {
             Some(d) => format!("{}", d.format("%Y-%m-%d")),
             None => CATALOG.gettext("n/a").to_string(),
         },
-        col - 12 - 15 - 9, // Optimized for 80 cols
+        store_name,
+        col - 12 - 15 - 9 - 10, // Optimized for 80 cols
     )
 }
 
-fn search(store: &PasswordStoreType, ui: &mut Cursive, query: &str) -> Result<()> {
+fn search(stores: StoreListType, ui: &mut Cursive, query: &str) -> Result<()> {
     let col = screen_width(ui);
     let mut l = ui
         .find_name::<SelectView<pass::PasswordEntry>>("results")
         .unwrap();
 
-    let r = pass::search(&*store.lock()?.lock()?, &String::from(query));
-
     l.clear();
-    for p in &r {
-        l.add_item(create_label(p, col), p.clone());
+    for store in stores.lock()?.iter() {
+        let store_guard = store.lock()?;
+        let r = pass::search(&*store_guard, &String::from(query));
+        for p in &r {
+            l.add_item(create_label(p, col, store_guard.get_name()), p.clone());
+        }
     }
     l.sort_by_label();
 
     Ok(())
 }
 
-fn do_search(store: &PasswordStoreType, ui: &mut Cursive, query: &str) {
-    let res = search(store, ui, query);
+fn do_search(stores: StoreListType, ui: &mut Cursive, query: &str) {
+    let res = search(stores, ui, query);
     if let Err(err) = res {
         helpers::errorbox(ui, &err);
     }
@@ -1156,14 +1207,14 @@ fn git_push(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
     Ok(())
 }
 
-fn do_git_pull(ui: &mut Cursive, store: PasswordStoreType) {
-    let res = git_pull(ui, store);
+fn do_git_pull(ui: &mut Cursive, store: PasswordStoreType, stores: StoreListType) {
+    let res = git_pull(ui, store, stores);
     if let Err(err) = res {
         helpers::errorbox(ui, &err);
     }
 }
 
-fn git_pull(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
+fn git_pull(ui: &mut Cursive, store: PasswordStoreType, stores: StoreListType) -> Result<()> {
     let _ = pull(&*store.lock()?.lock()?).map_err(|err| helpers::errorbox(ui, &err));
     let _ = store
         .lock()?
@@ -1171,19 +1222,7 @@ fn git_pull(ui: &mut Cursive, store: PasswordStoreType) -> Result<()> {
         .reload_password_list()
         .map_err(|err| helpers::errorbox(ui, &err));
 
-    let col = screen_width(ui);
-
-    ui.call_on_name(
-        "results",
-        |l: &mut SelectView<pass::PasswordEntry>| -> Result<()> {
-            l.clear();
-            #[allow(clippy::significant_drop_in_scrutinee)]
-            for p in store.lock()?.lock()?.passwords.iter() {
-                l.add_item(create_label(p, col), p.clone());
-            }
-            Ok(())
-        },
-    );
+    do_search(stores, ui, "");
     ui.call_on_name("status_bar", |l: &mut TextView| {
         l.set_content(CATALOG.gettext("Pulled from remote git repository"));
     });
@@ -1274,7 +1313,7 @@ fn pgp_pull(ui: &mut Cursive, store: PasswordStoreType, config_path: &Path) {
     ui.add_layer(ev);
 }
 
-fn do_delete_last_word(ui: &mut Cursive, store: PasswordStoreType) {
+fn do_delete_last_word(ui: &mut Cursive, stores: StoreListType) {
     ui.call_on_name("search_box", |e: &mut EditView| {
         let s = e.get_content();
         let last_space = s.trim().rfind(' ');
@@ -1291,7 +1330,7 @@ fn do_delete_last_word(ui: &mut Cursive, store: PasswordStoreType) {
         .find_name::<EditView>("search_box")
         .unwrap()
         .get_content();
-    do_search(&store, ui, &search_text);
+    do_search(stores, ui, &search_text);
 }
 
 fn get_translation_catalog() -> gettext::Catalog {
@@ -2113,21 +2152,21 @@ fn main() -> Result<()> {
     let mut ui = Cursive::default();
 
     ui.add_global_callback(Event::CtrlChar('y'), {
-        let store = store.clone();
-        move |ui: &mut Cursive| copy(ui, store.clone())
+        let stores = stores.clone();
+        move |ui: &mut Cursive| copy(ui, stores.clone())
     });
     ui.add_global_callback(Event::CtrlChar('u'), copy_name);
     ui.add_global_callback(Key::Enter, {
-        let store = store.clone();
-        move |ui: &mut Cursive| copy_first_line(ui, store.clone())
+        let stores = stores.clone();
+        move |ui: &mut Cursive| copy_first_line(ui, stores.clone())
     });
     ui.add_global_callback(Event::CtrlChar('b'), {
-        let store = store.clone();
-        move |ui: &mut Cursive| copy_mfa(ui, store.clone())
+        let stores = stores.clone();
+        move |ui: &mut Cursive| copy_mfa(ui, stores.clone())
     });
     ui.add_global_callback(Key::Del, {
-        let store = store.clone();
-        move |ui: &mut Cursive| delete(ui, store.clone())
+        let stores = stores.clone();
+        move |ui: &mut Cursive| delete(ui, stores.clone())
     });
 
     // Movement
@@ -2145,35 +2184,36 @@ fn main() -> Result<()> {
 
     // Show git history of a file
     ui.add_global_callback(Event::CtrlChar('h'), {
-        let store = store.clone();
-        move |ui: &mut Cursive| do_show_file_history(ui, store.clone())
+        let stores = stores.clone();
+        move |ui: &mut Cursive| do_show_file_history(ui, stores.clone())
     });
 
     // Query editing
     ui.add_global_callback(Event::CtrlChar('w'), {
-        let store = store.clone();
+        let stores = stores.clone();
         move |ui: &mut Cursive| {
-            do_delete_last_word(ui, store.clone());
+            do_delete_last_word(ui, stores.clone());
         }
     });
 
     // Editing
     ui.add_global_callback(Event::CtrlChar('o'), {
-        let store = store.clone();
+        let stores = stores.clone();
         move |ui: &mut Cursive| {
-            do_open(ui, store.clone());
+            do_open(ui, stores.clone());
         }
     });
     ui.add_global_callback(Event::CtrlChar('r'), {
-        let store = store.clone();
+        let stores = stores.clone();
         move |ui: &mut Cursive| {
-            rename_file_dialog(ui, store.clone());
+            rename_file_dialog(ui, stores.clone());
         }
     });
     ui.add_global_callback(Event::CtrlChar('f'), {
         let store = store.clone();
+        let stores = stores.clone();
         move |ui: &mut Cursive| {
-            do_git_pull(ui, store.clone());
+            do_git_pull(ui, store.clone(), stores.clone());
         }
     });
     ui.add_global_callback(Event::CtrlChar('g'), {
@@ -2197,9 +2237,9 @@ fn main() -> Result<()> {
     }
     let search_box = EditView::new()
         .on_edit({
-            let store = store.clone();
+            let stores = stores.clone();
             move |ui: &mut Cursive, query, _| {
-                do_search(&store, ui, query);
+                do_search(stores.clone(), ui, query);
             }
         })
         .with_name("search_box")
@@ -2239,28 +2279,28 @@ fn main() -> Result<()> {
         CATALOG.gettext("Operations"),
         Tree::new()
             .leaf(CATALOG.gettext("Copy (ctrl-y)"), {
-                let store = store.clone();
+                let stores = stores.clone();
                 move |ui: &mut Cursive| {
-                    copy(ui, store.clone());
+                    copy(ui, stores.clone());
                 }
             })
             .leaf(CATALOG.gettext("Copy Name (ctrl-u)"), copy_name)
             .leaf(CATALOG.gettext("Copy MFA Code (ctrl-b)"), {
-                let store = store.clone();
+                let stores = stores.clone();
                 move |ui: &mut Cursive| {
-                    copy_mfa(ui, store.clone());
+                    copy_mfa(ui, stores.clone());
                 }
             })
             .leaf(CATALOG.gettext("Open (ctrl-o)"), {
-                let store = store.clone();
+                let stores = stores.clone();
                 move |ui: &mut Cursive| {
-                    do_open(ui, store.clone());
+                    do_open(ui, stores.clone());
                 }
             })
             .leaf(CATALOG.gettext("File History (ctrl-h)"), {
-                let store = store.clone();
+                let stores = stores.clone();
                 move |ui: &mut Cursive| {
-                    do_show_file_history(ui, store.clone());
+                    do_show_file_history(ui, stores.clone());
                 }
             })
             .leaf(CATALOG.gettext("Create (ins) "), {
@@ -2270,15 +2310,15 @@ fn main() -> Result<()> {
                 }
             })
             .leaf(CATALOG.gettext("Delete (del)"), {
-                let store = store.clone();
+                let stores = stores.clone();
                 move |ui: &mut Cursive| {
-                    delete(ui, store.clone());
+                    delete(ui, stores.clone());
                 }
             })
             .leaf(CATALOG.gettext("Rename file (ctrl-r)"), {
-                let store = store.clone();
+                let stores = stores.clone();
                 move |ui: &mut Cursive| {
-                    rename_file_dialog(ui, store.clone());
+                    rename_file_dialog(ui, stores.clone());
                 }
             })
             .leaf(CATALOG.gettext("Team Members (ctrl-v)"), {
@@ -2291,8 +2331,9 @@ fn main() -> Result<()> {
             .delimiter()
             .leaf(CATALOG.gettext("Git Pull (ctrl-f)"), {
                 let store = store.clone();
+                let stores = stores.clone();
                 move |ui: &mut Cursive| {
-                    do_git_pull(ui, store.clone());
+                    do_git_pull(ui, store.clone(), stores.clone());
                 }
             })
             .leaf(CATALOG.gettext("Git Push (ctrl-g)"), {
@@ -2325,6 +2366,7 @@ fn main() -> Result<()> {
         let s = s.clone();
         let store_name = s.lock()?.get_name().clone();
         let store = store.clone();
+        let stores = stores.clone();
         tree.add_leaf(store_name, move |ui: &mut Cursive| {
             {
                 let mut to_store = store.lock().unwrap();
@@ -2347,12 +2389,18 @@ fn main() -> Result<()> {
             ui.call_on_name("search_box", |e: &mut EditView| {
                 e.set_content("");
             });
-            do_search(&store, ui, "");
+            do_search(stores.clone(), ui, "");
         });
     }
     tree.add_delimiter();
+    let stores_manage = stores.clone();
     tree.add_leaf(CATALOG.gettext("Manage"), move |ui: &mut Cursive| {
-        do_show_manage_config_dialog(ui, stores.clone(), config_file_location.clone(), &home);
+        do_show_manage_config_dialog(
+            ui,
+            stores_manage.clone(),
+            config_file_location.clone(),
+            &home,
+        );
     });
     ui.menubar().add_subtree(CATALOG.gettext("Stores"), tree);
 
@@ -2361,7 +2409,7 @@ fn main() -> Result<()> {
     // This construction is to make sure that the password list is populated when the program starts
     // it would be better to signal this somehow from the library, but that got tricky
     thread::sleep(time::Duration::from_millis(200));
-    do_search(&store, &mut ui, "");
+    do_search(stores, &mut ui, "");
 
     ui.run();
     Ok(())
